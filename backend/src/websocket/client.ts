@@ -1,7 +1,6 @@
 import type WebSocket from "ws";
 import { generateUUID } from "../utils.js";
-// import SocketMessage from "./message.js";
-import type { ClientMessage, InitPayload, ServerMessage } from "../../../shared/types.js";
+import type { ClientMessage, ServerMessage } from "../../../shared/types.js";
 
 export enum ClientState {
     IDLE = "IDLE",
@@ -61,8 +60,7 @@ export default class SocketClient {
                         return;
                     }
                     this.setConnectionState(ClientState.CONNECTING, offerData.targetId);
-                    targetClient.sendMsg({ type: "OFFER", data: { from: { id: this.id, name: this.name }, offer: offerData.offer } });
-                    this.sendMsg({ id: msg.id, type: "OFFER_ACK", data: { success: true } });
+                    targetClient.sendMsg({ id: msg.id, type: "OFFER", data: { from: { id: this.id, name: this.name }, offer: offerData.offer } });
                     break;
                 }
                 case 'ANSWER': {
@@ -73,20 +71,33 @@ export default class SocketClient {
                         return;
                     }
                     this.setConnectionState(ClientState.CONNECTING, answerData.targetId);
-                    targetClient.sendMsg({ type: "ANSWER", data: { fromId: this.id, answer: answerData.answer, password: answerData.password } });
+                    targetClient.sendMsg({ id: msg.id, type: "ANSWER", data: { accepted: answerData.accepted, answer: answerData.answer, from: { id: this.id, name: this.name } } });
                     this.sendMsg({ id: msg.id, type: "ANSWER_ACK", data: { success: true } });
+                    targetClient.peerId = this.getId();
+                    this.peerId = targetClient.getId();
                     break;
                 }
                 case 'ICE': {
+                    console.log(`Ice was sent by: ${this.getName()}`);
+                    
+                    if(!this.peerId) {
+                        this.sendMsg({
+                            id: msg.id,
+                            type: 'ICE_ACK', data: {
+                            success: false,
+                            message: "No peer connecting"
+                        }})
+                        return;
+                    }
                     const iceData = msg.data;
-                    const targetClient = SocketClient.clients.get(iceData.targetId);
+                    const targetClient = SocketClient.clients.get(this.peerId);
                     if (!targetClient) {
                         this.sendMsg({ id: msg.id, type: "ICE_ACK", data: { success: false, message: "Target client not found" } });
                         return;
                     }
                     targetClient.sendMsg({ type: "ICE", data: { fromId: this.id, iceCandidate: iceData.iceCandidate } });
                     this.sendMsg({ id: msg.id, type: "ICE_ACK", data: { success: true } });
-                    this.setConnectionState(ClientState.CONNECTED, iceData.targetId);
+                    this.setConnectionState(ClientState.CONNECTED, this.peerId);
                     targetClient.setConnectionState(ClientState.CONNECTED, this.id);
                     break;
                 }

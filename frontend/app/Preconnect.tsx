@@ -1,31 +1,24 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { toast } from 'react-toastify';
-import type { Partner } from './page';
+import { ConnectionStatus, PeerConn } from './page';
 import { PiPlugsConnectedThin } from 'react-icons/pi';
 import { SocketHandler } from './socket-handle';
-import { Peer, PeersPayload, VisibilityAckPayload } from '../../shared/types';
+import { AnswerAckPayload, OfferAckPayload, Peer, PeersPayload, VisibilityAckPayload } from '../../shared/types';
 import { TfiReload } from 'react-icons/tfi';
 import { FaPeopleGroup } from 'react-icons/fa6';
 import { Switch } from '@/components/ui/switch';
 import { Loader2 } from 'lucide-react';
 
 interface PreconnectProps {
-    onConnect: (partner: Partner) => void;
     socket: SocketHandler | null;
     onInit: (name: string, pass: string) => void; // Placeholder for socket handler
+    peerConn: PeerConn,
+    setPeer: React.Dispatch<React.SetStateAction<PeerConn>>;
 }
 
-export enum ConnectionStatus {
-    Idle = 'idle',
-    Connecting = 'connecting',
-    Connected = 'connected',
-    Failed = 'failed',
-}
-
-export default function Preconnect({ onConnect, onInit, socket }: PreconnectProps) {
+export default function Preconnect({ onInit, socket, peerConn, setPeer }: PreconnectProps) {
     const [config, setConfig] = useState<{
-        connectionStatus: ConnectionStatus;
         connectingPeer: Peer | null;
         peerId: string;
         isLoadingPeers: boolean;
@@ -35,7 +28,6 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
         password: string;
         peerPass: string;
     }>({
-        connectionStatus: ConnectionStatus.Idle,
         connectingPeer: null,
         isLoadingVisibility: false,
         isLoadingPeers: false,
@@ -47,21 +39,42 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
     });
     const [error, setError] = useState('');
     const [publicPeers, setPublicPeers] = useState<Peer[]>([]);
+    const pendingRemoteICE = useRef<any[]>([]);
 
     // Simulate fetching public peers
     const fetchPeers = async () => {
         if (!socket) return;
         setConfig((prev) => ({ ...prev, isLoadingPeers: true }));
-        socket.onIncomingOffer((from, offer) => {
-            connectionPopup(from.name, from.id);
-        })
-        socket.queueMsg({ id: (Math.random() * 10000).toString(), type: "PEERS_REQUEST", data: null }).then(msg=>{
+        socket.onIncomingOffer((from, offer, msgId) => {
+            connectionPopup(from.name, from.id, offer, msgId);
+        });
+        socket.onAnswer(async (from, answer) => {
+            if (!peerConn.pc) return;
+            await peerConn.pc.setRemoteDescription({
+                sdp: answer,
+                type: 'answer'
+            });
+            console.log("name set on answer: " + from.name);
+            setPeer(prev => ({ ...prev, status: ConnectionStatus.Connected, name: from.name, id: from.id }));
+        });
+        socket.onIce(async (from, ice) => {
+            if (!peerConn.pc) return;
+            if (!peerConn.pc.remoteDescription) {
+                pendingRemoteICE.current.push(ice);
+            }
+            else {
+                await peerConn.pc.addIceCandidate(new RTCIceCandidate(ice));
+                console.log("ice cand added");
+                setPeer(prev => ({ ...prev, status: ConnectionStatus.Connected }));
+            }
+        });
+        socket.queueMsg({ id: (Math.random() * 10000).toString(), type: "PEERS_REQUEST", data: null }).then(msg => {
             setPublicPeers((msg.data as PeersPayload).peers);
             setConfig((prev) => ({ ...prev, isLoadingPeers: false }));
         });
     };
 
-    function connectionPopup(peerName: string, peerId: string) {
+    function connectionPopup(peerName: string, peerId: string, offer: string, msgId: string) {
         toast(
             ({ closeToast }) => (
                 <div className="flex flex-col gap-3">
@@ -80,9 +93,34 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
                     </div>
                     <div className="flex gap-2">
                         <button
-                            onClick={() => {
+                            onClick={async () => {
+                                if (!peerConn.pc) return;
                                 closeToast();
-                                // confirmConnection();
+                                await peerConn.pc.setRemoteDescription({
+                                    sdp: offer,
+                                    type: 'offer'
+                                });
+                                if (pendingRemoteICE.current.length > 0) {
+                                    pendingRemoteICE.current.forEach(ice => {
+                                        if (!peerConn.pc) return;
+                                        peerConn.pc.addIceCandidate(new RTCIceCandidate(ice));
+                                    });
+                                    console.log("peer name set");
+                                    setPeer(prev => {
+                                        return {
+                                            ...prev,
+                                            status: ConnectionStatus.Connected,
+                                            name: peerName,
+                                            dc: {
+                                                sender: prev.dc.receiver,
+                                                metaSender: prev.dc.metaReceiver,
+                                                receiver: prev.dc.sender,
+                                                metaReceiver: prev.dc.metaSender
+                                            }
+                                        }
+                                    })
+                                }
+                                answer(true, peerId, msgId, offer);
                             }}
                             className="flex-1 px-4 py-2 bg-linear-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold rounded-lg transition-all duration-200 hover:shadow-lg"
                         >
@@ -91,6 +129,7 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
                         <button
                             onClick={() => {
                                 closeToast();
+                                answer(false, peerId, msgId);
                             }}
                             className="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold rounded-lg transition-all duration-200"
                         >
@@ -101,12 +140,49 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
             ),
             {
                 position: "top-center",
-                autoClose: false,
+                autoClose: 10000,
                 closeOnClick: false,
                 closeButton: false,
                 draggable: false,
             }
         );
+    }
+
+    async function answer(accept: boolean, id: string, msgId: string, offer?: string) {
+        if (!socket) return;
+        if (!peerConn.pc) return;
+        if (!accept) {
+            const res = (await socket.queueMsg({
+                id: msgId,
+                type: 'ANSWER',
+                data: {
+                    targetId: id,
+                    accepted: false,
+                    answer: ''
+                }
+            })).data as AnswerAckPayload;
+            if (!res.success) throw new Error("Unable to answer the request");
+        }
+        else {
+            if (!offer) throw new Error("Offer not found in the request");
+            await peerConn.pc.setRemoteDescription({
+                sdp: offer,
+                type: 'offer'
+            });
+            const ans = await peerConn.pc.createAnswer();
+            if (!ans.sdp) throw new Error("Error occured while accepting");
+            await peerConn.pc.setLocalDescription(ans);
+            const res = (await socket.queueMsg({
+                id: msgId,
+                type: 'ANSWER',
+                data: {
+                    targetId: id,
+                    answer: ans.sdp,
+                    accepted: true
+                }
+            })).data as AnswerAckPayload;
+            if (!res.success) throw new Error(`Error occured while accepting: ${res.message}`);
+        }
     }
 
     function handleVisibilityChange(visible: boolean) {
@@ -117,24 +193,25 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
         })
     }
 
-    function sendConnReq() {
-        if (!socket) return;
+    async function sendConnReq() {
+        if (!socket || !peerConn.pc || !peerConn.dc) return;
         if (!config.peerId) {
             toast.error("Please provide peerId")
         }
-        if (!config.peerId) {
-            setError('Please enter a connection code or select peer from the public list');
-            return;
-        }
-        socket.queueMsg({
-            id: (Math.random() * 10000).toString(),
+        const offer = await peerConn.pc.createOffer();
+        await peerConn.pc.setLocalDescription(offer);
+        if (!offer.sdp) return;
+        const res = (await socket.queueMsg({
+            id: (Math.random() * 1000).toString(),
             type: 'OFFER',
             data: {
                 targetId: config.peerId,
-                password: config.peerPass,
-                offer: ''
+                offer: offer.sdp,
+                password: config.peerPass
             }
-        })
+        })).data as OfferAckPayload;
+        if (res.success) toast.success("Request sent successfully!");
+        else toast.error(`Error Occured: ${res.message}`)
     }
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -245,15 +322,15 @@ export default function Preconnect({ onConnect, onInit, socket }: PreconnectProp
                                                     e.stopPropagation();
                                                     setConfig({ ...config, peerId: peer.id });
                                                 }}
-                                                disabled={config.connectionStatus < ConnectionStatus.Connected && config.connectingPeer?.id === peer.id}
+                                                disabled={peerConn.status < ConnectionStatus.Connected && config.connectingPeer?.id === peer.id}
                                                 className={`px-3 py-1.5 rounded-lg font-semibold text-sm transition-all duration-200
-                        ${config.connectionStatus === ConnectionStatus.Connecting && config.connectingPeer?.id === peer.id
+                        ${peerConn.status === ConnectionStatus.Connecting && config.connectingPeer?.id === peer.id
                                                         ? 'bg-gray-300 text-gray-500 cursor-wait'
                                                         : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-lg group-hover:scale-105'
                                                     }
                       `}
                                             >
-                                                {config.connectionStatus < ConnectionStatus.Connected && config.connectingPeer?.id === peer.id ? (
+                                                {peerConn.status < ConnectionStatus.Connected && config.connectingPeer?.id === peer.id ? (
                                                     <span className="flex items-center gap-2">
                                                         <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                                                             <circle

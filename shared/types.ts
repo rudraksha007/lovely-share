@@ -23,13 +23,12 @@ export type OfferPayload = {
 
 export type AnswerPayload = {
     targetId: string;
+    accepted: boolean;
     answer: string;
-    password: string;
 };
 
 export type IcePayload = {
-    targetId: string;
-    iceCandidate: string;
+    iceCandidate: any;
 };
 
 export type VisibilityPayload = {
@@ -87,14 +86,14 @@ export type ServerOfferPayload = {
 };
 
 export type ServerAnswerPayload = {
-    fromId: string;
+    from: Peer;
+    accepted: boolean;
     answer: string;
-    password: string;
 };
 
 export type ServerIcePayload = {
     fromId: string;
-    iceCandidate: string;
+    iceCandidate: any;
 };
 
 export type PeersPayload = {
@@ -113,8 +112,8 @@ export type ServerMessage =
     | { id: string, type: "ICE_ACK"; data: IceAckPayload }
     | { id: string, type: "CLOSE_ACK"; data: CloseAckPayload }
     | { id: string, type: "GEN_ACK"; data: GenAckPayload }
-    | { type: "OFFER"; data: ServerOfferPayload }
-    | { type: "ANSWER"; data: ServerAnswerPayload }
+    | { id: string, type: "OFFER"; data: ServerOfferPayload }
+    | { id: string, type: "ANSWER"; data: ServerAnswerPayload }
     | { type: "ICE"; data: ServerIcePayload }
     | { id: string, type: "PEERS"; data: PeersPayload }
     | { id: string, type: "VISIBILITY_ACK"; data: VisibilityAckPayload }
